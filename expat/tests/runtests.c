@@ -40,7 +40,15 @@
    USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-#include <expat_config.h>
+#ifdef _WIN32
+#  include "winconfig.h"
+#include <float.h>
+#ifndef isnan
+#define isnan _isnan
+#endif
+#else
+#  include <expat_config.h>
+#endif /* ndef _WIN32 */
 
 #if defined(NDEBUG)
 #  undef NDEBUG /* because test suite relies on assert(...) at the moment */
@@ -53,10 +61,27 @@
 #include <stddef.h> /* ptrdiff_t */
 #include <ctype.h>
 #include <limits.h>
-#include <stdint.h> /* intptr_t uint64_t */
+
+#if defined(_WIN32) && defined(_MSC_VER) && (_MSC_VER < 1600)
+/* vs2008/9.0 and earlier lack stdint.h; _MSC_VER 1600 is vs2010/10.0 */
+#  if defined(_WIN64)
+typedef unsigned __int64 uintptr_t;
+#  else
+typedef unsigned __int32 uintptr_t;
+#  endif
+#else
+#  include <stdint.h> /* uintptr_t */
+#endif
 
 #if ! defined(__cplusplus)
+#if defined(_MSC_VER) && (_MSC_VER <= 1700)
+/* for vs2012/11.0/1700 and earlier Visual Studio compilers */
+#  define bool int
+#  define false 0
+#  define true 1
+#else
 #  include <stdbool.h>
+#endif
 #endif
 
 #include "expat.h"
@@ -2666,8 +2691,8 @@ END_TEST
 static void XMLCALL
 element_decl_check_model(void *userData, const XML_Char *name,
                          XML_Content *model) {
-  UNUSED_P(userData);
   uint32_t errorFlags = 0;
+  UNUSED_P(userData);
 
   /* Expected model array structure is this:
    * [0] (type 6, quant 0)
@@ -3926,10 +3951,9 @@ END_TEST
 #if defined(XML_CONTEXT_BYTES)
 START_TEST(test_get_buffer_3_overflow) {
   XML_Parser parser = XML_ParserCreate(NULL);
-  assert(parser != NULL);
-
-  const char *const text = "\n";
+  const char *text = "\n";
   const int expectedKeepValue = (int)strlen(text);
+  assert(parser != NULL);
 
   // After this call, variable "keep" in XML_GetBuffer will
   // have value expectedKeepValue
@@ -4992,8 +5016,8 @@ END_TEST
 
 static void XMLCALL
 suspending_comment_handler(void *userData, const XML_Char *data) {
-  UNUSED_P(data);
   XML_Parser parser = (XML_Parser)userData;
+  UNUSED_P(data);
   XML_StopParser(parser, XML_TRUE);
 }
 
@@ -6210,13 +6234,16 @@ START_TEST(test_utf8_in_start_tags) {
     for (; j < sizeof(atNameStart) / sizeof(atNameStart[0]); j++) {
       const bool expectedSuccess
           = atNameStart[j] ? cases[i].goodNameStart : cases[i].goodName;
+      XML_Parser parser;
+      enum XML_Status status;
+      bool success;
       sprintf(doc, "<%s%s><!--", atNameStart[j] ? "" : "a", cases[i].tagName);
-      XML_Parser parser = XML_ParserCreate(NULL);
+      parser = XML_ParserCreate(NULL);
 
-      const enum XML_Status status
+      status
           = XML_Parse(parser, doc, (int)strlen(doc), /*isFinal=*/XML_FALSE);
 
-      bool success = true;
+      success = true;
       if ((status == XML_STATUS_OK) != expectedSuccess) {
         success = false;
       }
@@ -6812,13 +6839,14 @@ START_TEST(test_nested_entity_suspend) {
   CharData storage;
   XML_Parser parser = XML_ParserCreate(NULL);
   ParserPlusStorage parserPlusStorage = {parser, &storage};
-
+  enum XML_Status status;
+  
   CharData_Init(&storage);
   XML_SetParamEntityParsing(parser, XML_PARAM_ENTITY_PARSING_ALWAYS);
   XML_SetCommentHandler(parser, accumulate_and_suspend_comment_handler);
   XML_SetUserData(parser, &parserPlusStorage);
 
-  enum XML_Status status = XML_Parse(parser, text, (int)strlen(text), XML_TRUE);
+  status = XML_Parse(parser, text, (int)strlen(text), XML_TRUE);
   while (status == XML_STATUS_SUSPENDED) {
     status = XML_ResumeParser(parser);
   }
@@ -10214,6 +10242,8 @@ external_entity_parser_create_alloc_fail_handler(XML_Parser parser,
                                                  const XML_Char *base,
                                                  const XML_Char *systemId,
                                                  const XML_Char *publicId) {
+  const XML_Char *encodingName = XCS("UTF-8"); // needs something non-NULL
+  XML_Parser ext_parser;
   UNUSED_P(base);
   UNUSED_P(systemId);
   UNUSED_P(publicId);
@@ -10226,8 +10256,7 @@ external_entity_parser_create_alloc_fail_handler(XML_Parser parser,
   // &(parser->m_mem));" in function parserInit.
   allocation_count = 3;
 
-  const XML_Char *const encodingName = XCS("UTF-8"); // needs something non-NULL
-  const XML_Parser ext_parser
+  ext_parser
       = XML_ExternalEntityParserCreate(parser, context, encodingName);
   if (ext_parser != NULL)
     fail(
@@ -11718,14 +11747,17 @@ accounting_external_entity_ref_handler(XML_Parser parser,
                                        const XML_Char *base,
                                        const XML_Char *systemId,
                                        const XML_Char *publicId) {
-  UNUSED_P(context);
-  UNUSED_P(base);
-  UNUSED_P(publicId);
-
   const struct AccountingTestCase *const testCase
       = (const struct AccountingTestCase *)XML_GetUserData(parser);
 
   const char *externalText = NULL;
+  XML_Parser entParser;
+  XmlParseFunction xmlParseFunction;
+  enum XML_Status status;
+  UNUSED_P(context);
+  UNUSED_P(base);
+  UNUSED_P(publicId);
+
   if (xcstrcmp(systemId, XCS("first.ent")) == 0) {
     externalText = testCase->firstExternalText;
   } else if (xcstrcmp(systemId, XCS("second.ent")) == 0) {
@@ -11735,13 +11767,13 @@ accounting_external_entity_ref_handler(XML_Parser parser,
   }
   assert(externalText);
 
-  XML_Parser entParser = XML_ExternalEntityParserCreate(parser, context, 0);
+  entParser = XML_ExternalEntityParserCreate(parser, context, 0);
   assert(entParser);
 
-  const XmlParseFunction xmlParseFunction
+  xmlParseFunction
       = testCase->singleBytesWanted ? _XML_Parse_SINGLE_BYTES : XML_Parse;
 
-  const enum XML_Status status = xmlParseFunction(
+  status = xmlParseFunction(
       entParser, externalText, (int)strlen(externalText), XML_TRUE);
 
   XML_ParserFree(entParser);
@@ -11951,6 +11983,10 @@ START_TEST(test_accounting_precision) {
             + cases[u].expectedCountBytesIndirectExtra;
 
       XML_Parser parser = XML_ParserCreate(NULL);
+      XmlParseFunction xmlParseFunction;
+      enum XML_Status status;
+      unsigned long long actualCountBytesDirect;
+      unsigned long long actualCountBytesIndirect;
       XML_SetParamEntityParsing(parser, XML_PARAM_ENTITY_PARSING_ALWAYS);
       if (cases[u].firstExternalText) {
         XML_SetExternalEntityRefHandler(parser,
@@ -11959,19 +11995,19 @@ START_TEST(test_accounting_precision) {
         cases[u].singleBytesWanted = singleBytesWanted;
       }
 
-      const XmlParseFunction xmlParseFunction
+      xmlParseFunction
           = singleBytesWanted ? _XML_Parse_SINGLE_BYTES : XML_Parse;
 
-      enum XML_Status status
+      status
           = xmlParseFunction(parser, cases[u].primaryText,
                              (int)strlen(cases[u].primaryText), XML_TRUE);
       if (status != XML_STATUS_OK) {
         _xml_failure(parser, __FILE__, __LINE__);
       }
 
-      const unsigned long long actualCountBytesDirect
+      actualCountBytesDirect
           = testingAccountingGetCountBytesDirect(parser);
-      const unsigned long long actualCountBytesIndirect
+      actualCountBytesIndirect
           = testingAccountingGetCountBytesIndirect(parser);
 
       XML_ParserFree(parser);
